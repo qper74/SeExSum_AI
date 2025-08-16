@@ -1,7 +1,11 @@
 import argparse
 import asyncio
 import logging
+import warnings
 from typing import Any
+
+# Suppress deprecation warnings from dependencies
+warnings.filterwarnings('ignore', category=DeprecationWarning)
 
 from .core import SeExSumAI, print_result
 

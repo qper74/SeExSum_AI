@@ -4,8 +4,13 @@ import json
 import time
 import asyncio
 import logging
+import warnings
 from typing import List, Dict, Any, Optional, Callable
 from urllib.parse import urlparse
+
+# Suppress deprecation warnings from dependencies
+warnings.filterwarnings('ignore', category=DeprecationWarning)
+warnings.filterwarnings('ignore', message='.*text.*argument.*deprecated.*')
 
 import requests
 from dotenv import load_dotenv
