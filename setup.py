@@ -8,7 +8,7 @@ setup(
     install_requires=[
         "requests>=2.31.0",
         "python-dotenv>=1.0.0",
-        "duckduckgo-search>=4.1.0",
+        "ddgs>=9.0.0",
         "crawl4ai>=0.1.0",
     ],
     entry_points={
