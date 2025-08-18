@@ -465,7 +465,8 @@ def build_answer_prompt(question: str, url_to_md: Dict[str, str]) -> List[Dict[s
             "You are a careful research assistant. Read the provided source snippets "
             "and answer the user's question concisely and accurately. If facts conflict, say so. "
             "If information is insufficient, say what is missing. "
-            "Cite sources inline using [#] that match the numbered list."
+            "Cite sources inline using [#] that match the numbered list. "
+            "Your answer must be self-contained, begin as a proper sentence (not mid-sentence), and end with proper punctuation."
         ),
     }
     user = {
@@ -474,7 +475,8 @@ def build_answer_prompt(question: str, url_to_md: Dict[str, str]) -> List[Dict[s
             f"QUESTION:\n{question}\n\n"
             f"NUMBERED SOURCES:\n{numbered}\n\n"
             f"SNIPPETS (Markdown, lightly cleaned):\n{context_text}\n\n"
-            "Now write a concise answer (3–8 sentences when possible), include 1–4 inline citations like [2], [3]."
+            "Now write a concise answer (3–8 sentences when possible), include 1–4 inline citations like [2], [3]. "
+            "Do not start mid-sentence; begin with a clear subject."
         ),
     }
     return [system, user]
@@ -661,6 +663,53 @@ class SeExSumAI:
                     answer = (answer + " " + continuation).strip()
             except Exception:
                 # Best-effort; keep the original answer if continuation fails
+                pass
+
+        # If the model started mid-sentence (e.g., begins with a closing quote, comma, or conjunction),
+        # ask it to rewrite the answer into a clean, self-contained paragraph while preserving citations.
+        def _looks_mid_sentence_start(text: str) -> bool:
+            t = (text or "").lstrip()
+            if not t:
+                return False
+            # Suspicious starts: closing punctuation/quotes, comma, dash, ellipsis, or conjunctions
+            if re.match(r'^[\)\]\"\'\u201D\,\-\u2026]', t):
+                return True
+            if re.match(r'^(and|but|so|or|because|however|therefore)\b', t, re.IGNORECASE):
+                return True
+            # If first character is lowercase ASCII letter and not a proper noun, likely mid-sentence
+            if re.match(r'^[a-z]', t):
+                return True
+            return False
+
+        if _looks_mid_sentence_start(answer):
+            try:
+                rewrite_messages: List[Dict[str, str]] = [
+                    messages[0],
+                    messages[1],
+                    {"role": "assistant", "content": answer},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Rewrite the assistant's answer into a self-contained, well-formed paragraph that starts with a full sentence "
+                            "and ends with proper punctuation. Preserve the factual content and keep the existing inline citations [#]; "
+                            "do not introduce new claims."
+                        ),
+                    },
+                ]
+                rewritten = call_openrouter(
+                    self.api_key,
+                    self.model,
+                    rewrite_messages,
+                    temperature=max(0.1, min(temperature, 0.7)),
+                    max_tokens=max(256, min(max_answer_tokens // 2, 600)),
+                    reasoning_config={
+                        "effort": REASONING_EFFORT,
+                        "exclude": REASONING_EXCLUDE,
+                    },
+                )
+                if rewritten:
+                    answer = rewritten.strip()
+            except Exception:
                 pass
 
         used_urls = list(url_to_md.keys())
