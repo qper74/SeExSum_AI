@@ -18,11 +18,18 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("question", type=str, help="Your question in natural language")
     p.add_argument("--model", type=str, default=None, help="OpenRouter model id")
     p.add_argument("--k", type=int, default=6, help="Max DDG results per query")
+    p.add_argument(
+        "--engines",
+        type=str,
+        default="ddg",
+        help="Comma-separated search engines: ddg,startpage",
+    )
     p.add_argument("--max-pages", type=int, default=6, help="Max pages to crawl total (after dedupe)")
     p.add_argument("--per-page-chars", type=int, default=5000, help="Chars to keep per crawled page")
     p.add_argument("--total-context-chars", type=int, default=16000, help="Total chars sent to LLM (safety clamp)")
     p.add_argument("--timeout-ms", type=int, default=60000, help="Per-page crawl timeout (ms)")
     p.add_argument("--temperature", type=float, default=0.2, help="LLM temperature for final answer")
+    p.add_argument("--max-answer-tokens", type=int, default=2000, help="Max tokens for final answer")
     return p.parse_args()
 
 
@@ -33,14 +40,17 @@ def main() -> None:
     ai = SeExSumAI(model=args.model or "openai/gpt-oss-120b")
 
     async def _run() -> None:
+        engines = [e.strip() for e in (args.engines or "ddg").split(",") if e.strip()]
         result = await ai.get_answer(
             args.question,
             k=args.k,
+            engines=engines,
             max_pages=args.max_pages,
             per_page_chars=args.per_page_chars,
             total_context_chars=args.total_context_chars,
             timeout_ms=args.timeout_ms,
             temperature=args.temperature,
+            max_answer_tokens=args.max_answer_tokens,
         )
         print_result(result["answer"], result["sources"])
 

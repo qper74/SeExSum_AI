@@ -9,7 +9,7 @@ This repository provides:
 ## What it does (in plain English)
 
 1. **Question reformulation**: Uses LLM (via OpenRouter) to transform your question into strong web search queries
-2. **Web search**: Searches the web with DuckDuckGo and collects top result URLs
+2. **Web search**: Searches the web with multiple engines (DuckDuckGo, Startpage) and collects top result URLs
 3. **Page cleaning**: Uses Crawl4AI to convert each page into LLM-friendly Markdown format
 4. **Answer synthesis**: Asks the LLM to synthesize the answer based on sources
 5. **Result display**: Prints the answer and the list of sources
@@ -48,6 +48,22 @@ echo 'OPENROUTER_API_KEY=sk-or-...' >> .env
 seexsum-ai "Who directed Dune (2021) and when did it release?"
 ```
 
+### Search engine options (CLI)
+
+```bash
+# Use only DuckDuckGo (default)
+seexsum-ai "What is the capital of France?"
+
+# Use only Startpage (Google results, privacy-focused)
+seexsum-ai "What is the capital of France?" --engines startpage
+
+# Use both engines for comprehensive results
+seexsum-ai "What is the capital of France?" --engines ddg,startpage
+
+# Compare results from different engines
+seexsum-ai "Latest AI developments 2024" --engines ddg,startpage --max-pages 8
+```
+
 ### With specific parameters (CLI)
 
 ```bash
@@ -70,23 +86,31 @@ from seexsum_ai import SeExSumAI
 
 # Async usage (recommended)
 ai = SeExSumAI()
+
+# Use default engine (DuckDuckGo)
 result = await ai.get_answer("Who directed Dune (2021) and when did it release?", max_pages=5)
+
+# Use specific engines
+result = await ai.get_answer("What is the capital of France?", engines=["startpage"])
+result = await ai.get_answer("Latest AI developments", engines=["ddg", "startpage"])
+
 print(result["answer"])  # str
 print(result["sources"]) # list[str]
 
 # Sync (convenience) usage
-result = ai.get_answer_sync("What is the capital of France?", k=6)
+result = ai.get_answer_sync("What is the capital of France?", k=6, engines=["ddg", "startpage"])
 ```
 
 **Parameters:**
 - `--model`: OpenRouter model identifier (default: `openai/gpt-oss-120b`)
-- `--k`: Max DDG results per query (default: 6)
-- `--max-pages`: Max pages to crawl (default: 6)
+- `--engines`: Comma-separated search engines: `ddg`, `startpage` (default: `ddg`)
+- `--k`: Max results per query per engine (default: 6)
+- `--max-pages`: Max pages to crawl total (after deduplication) (default: 6)
 - `--per-page-chars`: Characters per page (default: 5000)
 - `--total-context-chars`: Total characters sent to LLM (default: 16000)
 - `--timeout-ms`: Per-page timeout (ms) (default: 60000)
 - `--temperature`: LLM temperature for final answer (default: 0.2)
-- `--max-answer-tokens`: Max tokens for final answer (default: 600)
+- `--max-answer-tokens`: Max tokens for final answer (default: 2000)
 
 ## Configuration
 
@@ -126,7 +150,8 @@ The script uses `openai/gpt-oss-120b` by default, but you can switch to any mode
 → Reformulating your question into search queries...
   Queries: capital of France | France capital city | what is the capital of France
 → Searching DuckDuckGo...
-  Selected 6 URLs to crawl.
+→ Searching Startpage...
+  Selected 8 URLs to crawl (after deduplication).
 → Crawling & cleaning pages (Crawl4AI)...
 → Asking the LLM to synthesize the answer...
 
@@ -162,16 +187,18 @@ If you encounter problems, read the error message carefully. Most issues stem fr
 ### Technologies used
 
 - **OpenRouter**: LLM API service
-- **DuckDuckGo**: Web search
+- **DuckDuckGo**: Web search (privacy-focused)
+- **Startpage**: Web search (Google results, privacy-focused)
 - **Crawl4AI**: Web page crawling and cleaning
 - **Python**: Programming language
 
 ### Architecture
 
 1. **Question processing**: Transforms to search queries using LLM
-2. **Web search**: Uses DuckDuckGo API
-3. **Content extraction**: Asynchronous crawling with Crawl4AI
-4. **Answer generation**: LLM synthesizes answer from sources
+2. **Multi-engine search**: Uses DuckDuckGo and/or Startpage (configurable)
+3. **Result deduplication**: Combines and deduplicates results from multiple engines
+4. **Content extraction**: Asynchronous crawling with Crawl4AI
+5. **Answer generation**: LLM synthesizes answer from sources
 
 ## License
 

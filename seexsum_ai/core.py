@@ -315,6 +315,98 @@ def ddg_web_search(queries: List[str], k: int = 8) -> List[Dict[str, str]]:
     return results
 
 
+def startpage_web_search(queries: List[str], k: int = 8) -> List[Dict[str, str]]:
+    """Scrape Startpage search results.
+
+    Implementation notes:
+    - Uses simple HTML parsing via regex to avoid extra deps
+    - Attempts multiple known Startpage paths for resilience
+    - Dedupes by normalized URL and filters low-value domains
+    """
+    results: List[Dict[str, str]] = []
+    seen_urls = set()
+
+    session = requests.Session()
+    session.headers.update(
+        {
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/125.0.0.0 Safari/537.36"
+            ),
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.startpage.com/",
+        }
+    )
+
+    search_urls = [
+        "https://www.startpage.com/sp/search",
+        "https://www.startpage.com/do/search",
+    ]
+
+    # Regex patterns for result anchors and snippets (multiple variants for resilience)
+    anchor_patterns = [
+        re.compile(r'<a[^>]+class="[^"]*(?:w-gl__result-title|result-link|result-title)[^"]*"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL),
+        re.compile(r'<a[^>]+data-testid="result-title-a"[^>]+href="([^"]+)"[^>]*>(.*?)</a>', re.IGNORECASE | re.DOTALL),
+    ]
+    snippet_patterns = [
+        re.compile(r'<p[^>]+class="[^"]*(?:w-gl__description|result-summary|result-snippet)[^"]*"[^>]*>(.*?)</p>', re.IGNORECASE | re.DOTALL),
+    ]
+
+    def _clean_html(text: str) -> str:
+        text = re.sub(r"<[^>]+>", " ", text)
+        text = re.sub(r"\s+", " ", text)
+        return text.strip()
+
+    for q in queries:
+        per_query_collected = 0
+        for base_url in search_urls:
+            if per_query_collected >= k:
+                break
+            try:
+                # Startpage expects the query parameter key 'q'
+                resp = session.get(base_url, params={"q": q}, timeout=20)
+                if resp.status_code != 200:
+                    continue
+                html = resp.text
+
+                # Extract anchors
+                anchors: List[tuple] = []
+                for pat in anchor_patterns:
+                    anchors.extend(pat.findall(html))
+                # Extract snippets
+                snippets: List[str] = []
+                for spat in snippet_patterns:
+                    snippets.extend([_clean_html(m) for m in spat.findall(html)])
+
+                snippet_idx = 0
+                for href, inner_html in anchors:
+                    if per_query_collected >= k:
+                        break
+                    if not href:
+                        continue
+                    # Normalize and filter
+                    if is_low_value(href):
+                        continue
+                    key = normalize_url(href)
+                    if key in seen_urls:
+                        continue
+
+                    title = _clean_html(inner_html)
+                    body = snippets[snippet_idx] if snippet_idx < len(snippets) else ""
+                    snippet_idx += 1
+
+                    seen_urls.add(key)
+                    results.append({"title": title, "href": href.strip(), "body": body})
+                    per_query_collected += 1
+
+            except Exception as e:
+                log.warning(f"[search] Startpage failed for '{q}': {e}")
+                continue
+
+    return results
+
+
 async def crawl_pages(
     urls: List[str],
     per_page_char_limit: int = 5000,
@@ -426,11 +518,13 @@ class SeExSumAI:
         question: str,
         *,
         k: int = 6,
+        engines: Optional[List[str]] = None,
         max_pages: int = 6,
         per_page_chars: int = 5000,
         total_context_chars: int = 16000,
         timeout_ms: int = 60000,
         temperature: float = 0.2,
+        max_answer_tokens: int = MAX_TOKENS_FINAL_ANSWER,
     ) -> Dict[str, Any]:
         if not question or not isinstance(question, str):
             raise ValueError("Parameter 'question' must be a non-empty string")
@@ -447,17 +541,33 @@ class SeExSumAI:
         self.log.info("  Queries: " + " | ".join(queries))
 
         self._emit("search:start", {"k": k})
-        self.log.info("→ Searching DuckDuckGo...")
-        try:
-            hits = ddg_web_search(queries, k=k)
-        except Exception as e:
-            raise SearchError(f"DuckDuckGo search failed: {e}") from e
-        if not hits:
-            raise SearchError("No search results found. Try rephrasing the question.")
+        engines_list = [e.strip().lower() for e in (engines or ["ddg"]) if e and e.strip()]
+        if not engines_list:
+            engines_list = ["ddg"]
+
+        all_hits: List[Dict[str, str]] = []
+        for engine in engines_list:
+            if engine == "ddg":
+                self.log.info("→ Searching DuckDuckGo...")
+                try:
+                    all_hits.extend(ddg_web_search(queries, k=k))
+                except Exception as e:
+                    self.log.warning(f"DuckDuckGo search failed: {e}")
+            elif engine == "startpage":
+                self.log.info("→ Searching Startpage...")
+                try:
+                    all_hits.extend(startpage_web_search(queries, k=k))
+                except Exception as e:
+                    self.log.warning(f"Startpage search failed: {e}")
+            else:
+                self.log.warning(f"Unknown search engine: {engine}")
+
+        if not all_hits:
+            raise SearchError("No search results found across engines. Try rephrasing the question.")
 
         unique: List[Dict[str, str]] = []
         seen = set()
-        for h in hits:
+        for h in all_hits:
             key = normalize_url(h["href"])
             if key in seen:
                 continue
@@ -499,7 +609,7 @@ class SeExSumAI:
                 self.model,
                 messages,
                 temperature=temperature,
-                max_tokens=MAX_TOKENS_FINAL_ANSWER,
+                max_tokens=max_answer_tokens,
                 reasoning_config={
                     "effort": REASONING_EFFORT,
                     "exclude": REASONING_EXCLUDE,
@@ -507,6 +617,51 @@ class SeExSumAI:
             )
         except Exception as e:
             raise LLMError(f"Failed to synthesize final answer: {e}") from e
+
+        # If the model response appears truncated (no sentence-ending punctuation),
+        # request a short continuation to finish the thought cleanly.
+        def _looks_truncated(text: str) -> bool:
+            t = (text or "").strip()
+            if not t:
+                return False
+            # Consider it complete if it ends with sentence punctuation or a citation bracket
+            if re.search(r"[\.\!\?]$", t):
+                return False
+            if re.search(r"\]\s*$", t):
+                return False
+            return True
+
+        if _looks_truncated(answer):
+            try:
+                # Reuse the same prompt context, add the partial assistant answer and ask to continue.
+                continuation_messages: List[Dict[str, str]] = [
+                    messages[0],  # system
+                    messages[1],  # user with question + sources + snippets
+                    {"role": "assistant", "content": answer},
+                    {
+                        "role": "user",
+                        "content": (
+                            "Continue exactly where you left off to finish the current sentence/paragraph. "
+                            "Do not repeat prior text. Keep it concise and end naturally."
+                        ),
+                    },
+                ]
+                continuation = call_openrouter(
+                    self.api_key,
+                    self.model,
+                    continuation_messages,
+                    temperature=max(0.1, min(temperature, 0.7)),
+                    max_tokens=max(128, min(max_answer_tokens // 4, 512)),
+                    reasoning_config={
+                        "effort": REASONING_EFFORT,
+                        "exclude": REASONING_EXCLUDE,
+                    },
+                )
+                if continuation:
+                    answer = (answer + " " + continuation).strip()
+            except Exception:
+                # Best-effort; keep the original answer if continuation fails
+                pass
 
         used_urls = list(url_to_md.keys())
         self._emit("synthesize:done", {"sources": used_urls})
